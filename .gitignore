@@ -1,0 +1,5 @@
+# objets et exécutables de compilation
+*.o
+*.out
+*.exe
+build/
