@@ -20,11 +20,9 @@ Color operator+(const Color& c1, const Color& c2) {
 }
 
 void Color::fromCMY(uint8_t c, uint8_t m, uint8_t y) {
-    if (!(c > 0) && !(c <= 255) && !(m > 0) && !(m <= 255) && !(y > 0) && !(m <= 255 ))
-        throw std::runtime_error("données pas bonnes");
-    r = 1 - c;
-    g = 1 - m;
-    b = 1 - y;
+    r = 255 - c;
+    g = 255 - m;
+    b = 255 - y;
 }
 
 // Fonction général
@@ -426,7 +424,7 @@ ColorImage* ColorImage::readTGA(std::istream& is) {
 
 
 ColorImage * ColorImage::readMaison(std::istream& is) {
-    uint8_t entete[9];
+    uint8_t entete[9];          // "Maison" + taille du commentaire + largeur + hauteur
     is.read((char*) entete, 9);
 
     if(!is) {
@@ -446,16 +444,18 @@ ColorImage * ColorImage::readMaison(std::istream& is) {
     if(entete[5] != 'n')
         throw std::runtime_error("problem avec l'entete"); 
 
-    uint16_t w = entete[7];
-    uint16_t h = entete[9];
     uint16_t commentaireLen = entete[6];
-
-    uint16_t commentaire;
-    is.read((char*)commentaire, commentaireLen);
-    std::cout << commentaire << std::endl;
+    uint16_t w = entete[7];
+    uint16_t h = entete[8];     // derniere case : le tableau va de 0 a 8
 
     if (w == 0|| h == 0)
         throw std::invalid_argument("il ne peux pas y avoir de dimention null");
+
+    std::string commentaire(commentaireLen, ' ');       // la place pour tout le commentaire
+    is.read(&commentaire[0], commentaireLen);
+    if (!is)
+        throw std::runtime_error("commentaire maison tronque");
+    std::cout << commentaire << std::endl;
 
     ColorImage* img = new ColorImage(w, h);
     for (uint16_t y = 0; y < h; ++y) {
@@ -466,9 +466,7 @@ ColorImage * ColorImage::readMaison(std::istream& is) {
                 delete img; 
                 throw std::runtime_error("fichier maison tronque");
             }
-            Color* c = new Color();
-            c->fromCMY(cmy[1], cmy[2], cmy[3]);
-            img->pixel(x, y) = Color(c->r, c->g, c->b);
+            img->pixel(x, y).fromCMY(cmy[0], cmy[1], cmy[2]);
         }
     }
     return img;
@@ -478,17 +476,17 @@ ColorImage * ColorImage::readMaison(std::istream& is) {
 
 
 ColorImage * ColorImage::anaglyphe() {
-    uint16_t w = getWidth() / 2;
+    uint16_t w = getWidth() / 2;        // l'image contient les deux vues cote a cote
     uint16_t h = getHeight();
 
     ColorImage* img = new ColorImage(w, h);
 
-    for(size_t x = 0; x < h; ++x) {
-        for(size_t y = 0; y < w; ++y) {
+    for(uint16_t y = 0; y < h; ++y) {
+        for(uint16_t x = 0; x < w; ++x) {
+            // rouge de la vue de gauche, vert et bleu de la vue de droite
             img->pixel(x, y) = Color(pixel(x, y).r, pixel(x + w, y).g, pixel(x + w, y).b);
         }
     }
     return img;
-    
 }
 
