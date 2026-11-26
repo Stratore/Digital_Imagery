@@ -1,5 +1,9 @@
 #include "Image.hpp"
 
+// PPM et le tableau de Color s'ecrivent / se lisent d'un bloc : il faut que Color fasse
+// exactement 3 octets r g b colles, sans rembourrage
+static_assert(sizeof(Color) == 3, "Color doit faire 3 octets");
+
 
 //color ---
 
@@ -60,7 +64,7 @@ void GrayImage::writePGM(std::ostream& os) const {
     << getWidth() << " " << getHeight() << "\n"
     << "#bonjour\n"
     << "255\n";
-    os.write((const char*) array, getWidth()*getHeight());
+    os.write((const char*) array, taille());
 }
 
 
@@ -149,6 +153,8 @@ GrayImage* GrayImage::readTGA(std::istream& is) {
 
     uint8_t entete[18]; // dans la doc on nous dis que l'en tete fais toujour 18 octes
     is.read((char*) entete, 18);
+    if (!is)
+        throw std::runtime_error("entete TGA tronquee");
 
 
     if (entete[2] != 3) // le type d'image 
@@ -208,14 +214,14 @@ void ColorImage::writePPM(std::ostream& os) const {
     << getWidth() << " " << getHeight() << "\n"
     << "#bonjour\n"
     << "255\n";
-    os.write((const char*) array, getWidth()*getHeight()*3);
+    os.write((const char*) array, taille() * 3);
 }
 
 ColorImage* ColorImage::readPPM(std::istream& is) {
     std::string magic_nbr = "";
     getline(is, magic_nbr);
     if (magic_nbr != "P6" && magic_nbr != "P3")         //P6 pour ASCII+binaire et P3 pour ASCII pur, meme principe que grayimage
-        throw std::runtime_error("pas sur PGM valide");
+        throw std::runtime_error("pas sur PPM valide");
     skip_comments(is);
     uint16_t width, height;
     if (!(is >> width >> height))
@@ -280,11 +286,22 @@ void ColorImage::writeTGA(std::ostream& os, bool rle) const {
     entete[17] = 0x20;              // l'octet 17 indique si l'image commenec en haut ou en bas 
     os.write((char*) entete, 18);   //// envoie les 18 octets d'un coup
 
+    const uint16_t w = getWidth();
+    // chaque ligne est preparee dans ce tampon puis ecrite d'un seul coup : un os.put par
+    // octet coutait un appel au flux pour chaque composante de chaque pixel
+    std::vector<uint8_t> tampon;
+    tampon.reserve(size_t(w) * 4);      // au pire en RLE : 1 octet d'en-tete par pixel en plus
+
     if (!rle) {                         // si c'est type 2 
-        for (size_t t = 0; t < size_t(getWidth()) * getHeight(); ++t) {   // ici ca parcoure le tableau a plat
-            os.put(array[t].b);     // bgr car en TGA veut dans l'ordre bleu vert rouge 
-            os.put(array[t].g);
-            os.put(array[t].r);
+        for (uint16_t y = 0; y < getHeight(); ++y) {
+            const Color* ligne = array + size_t(y) * w;
+            tampon.clear();
+            for (uint16_t x = 0; x < w; ++x) {
+                tampon.push_back(ligne[x].b);   // bgr car en TGA veut dans l'ordre bleu vert rouge 
+                tampon.push_back(ligne[x].g);
+                tampon.push_back(ligne[x].r);
+            }
+            os.write((const char*) tampon.data(), tampon.size());
         }
         return;
     }
@@ -292,30 +309,33 @@ void ColorImage::writeTGA(std::ostream& os, bool rle) const {
     // si type 10 je fais le RLE, ligne par ligne
     // au lieu de maqué 5 pixel rouge, je vais venir faire 5*couleur rouge (comme vu dans la lecon)
     for (uint16_t y = 0; y < getHeight(); ++y) {
+        const Color* ligne = array + size_t(y) * w;     // la ligne lue directement, sans pixel() et sa verification
+        tampon.clear();
         uint16_t x = 0;     //indice de ou j'en suis sur la ligne
-        while (x < getWidth()) {
+        while (x < w) {
             uint16_t n = 1; // il y a au minimu le pixel courant donc 1 
-            while (x + n < getWidth() && n < 128 && pixel(x + n, y) == pixel(x, y))      // qu'on ne dépasse pas le finde de ligne et que le maquet fais 128 pixel max et si meme couleur
+            while (x + n < w && n < 128 && ligne[x + n] == ligne[x])      // qu'on ne dépasse pas le finde de ligne et que le maquet fais 128 pixel max et si meme couleur
                 ++n;
 
             if (n >= 2) {  // un paquet est repéré au moin deux pixels pareil
-                os.put(uint8_t(0x80 | (n - 1)));  // bit 7 a 1 = paquet repete ; les 7 autres bits portent n - 1 car un pixel 0 n'éxiste pas donc la quantité réel de 1 a 128pixels est stoké sous forme 0 a 127
+                tampon.push_back(uint8_t(0x80 | (n - 1)));  // bit 7 a 1 = paquet repete ; les 7 autres bits portent n - 1 car un pixel 0 n'éxiste pas donc la quantité réel de 1 a 128pixels est stoké sous forme 0 a 127
                 // donc pour faire simple ce put indiquera donc d'ue part si il doit répété la couleur (1 ou 0, et le nombre de fois qu'il faut le répété la couleur qui vient après 
-                os.put(pixel(x, y).b);      // pixel() renvoie un Color& car ColorImage hérite de Image<Color>
-                os.put(pixel(x, y).g);
-                os.put(pixel(x, y).r);
+                tampon.push_back(ligne[x].b);
+                tampon.push_back(ligne[x].g);
+                tampon.push_back(ligne[x].r);
             } else {                              // paquet brut
-                while (x + n < getWidth() && n < 128 && !(pixel(x + n, y) == pixel(x + n - 1, y)))       // contrairement a l'autre while qui cherche des pixels pareil lui note les pixels différents 
+                while (x + n < w && n < 128 && !(ligne[x + n] == ligne[x + n - 1]))       // contrairement a l'autre while qui cherche des pixels pareil lui note les pixels différents 
                     ++n;
-                os.put(uint8_t(n - 1)); // comment pour les paquet la on va venir fais des paquets avec le nombre de pixels diférents en tete et ensuite les couleur diférente,  ca permet de gagner pas mal de place
+                tampon.push_back(uint8_t(n - 1)); // comment pour les paquet la on va venir fais des paquets avec le nombre de pixels diférents en tete et ensuite les couleur diférente,  ca permet de gagner pas mal de place
                 for (uint16_t i = 0; i < n; ++i) {
-                    os.put(pixel(x + i, y).b);
-                    os.put(pixel(x + i, y).g);
-                    os.put(pixel(x + i, y).r);
+                    tampon.push_back(ligne[x + i].b);
+                    tampon.push_back(ligne[x + i].g);
+                    tampon.push_back(ligne[x + i].r);
                 }
             }
             x += n; // je saute les n pixels que je viens de traiter 
         }
+        os.write((const char*) tampon.data(), tampon.size());
     }
 }
 
@@ -324,6 +344,8 @@ void ColorImage::writeTGA(std::ostream& os, bool rle) const {
 ColorImage* ColorImage::readTGA(std::istream& is) {
     uint8_t entete[18];
     is.read((char*) entete, 18);
+    if (!is)
+        throw std::runtime_error("entete TGA tronquee");
 
     const uint8_t type = entete[2];
     if (type != 1 && type != 2)
@@ -357,17 +379,17 @@ ColorImage* ColorImage::readTGA(std::istream& is) {
 
 
         ColorImage* img = new ColorImage(w, h);
+        std::vector<uint8_t> bgr(size_t(w) * 3);       // une ligne entiere lue d'un coup, plutot que 3 octets par pixel
         for (uint16_t y = 0; y < h; ++y) {
             const uint16_t ligne = basGauche ? h - 1 - y : y;
-            for (uint16_t x = 0; x < w; ++x) {
-                uint8_t bgr[3];                         // tableau de 3 (bgr)
-                is.read((char*) bgr, 3);
-                if (!is) {
-                    delete img;                         // le delete avant le throw pour pas avoir de fuite memoire
-                    throw std::runtime_error("fichier TGA tronque");
-                }
-                img->pixel(x, ligne) = Color(bgr[2], bgr[1], bgr[0]);   // Color attend r g b, le TGA stocke b g r
+            is.read((char*) bgr.data(), bgr.size());
+            if (!is) {
+                delete img;                         // le delete avant le throw pour pas avoir de fuite memoire
+                throw std::runtime_error("fichier TGA tronque");
             }
+            Color* dest = img->array + size_t(ligne) * w;
+            for (uint16_t x = 0; x < w; ++x)
+                dest[x] = Color(bgr[x * 3 + 2], bgr[x * 3 + 1], bgr[x * 3]);   // Color attend r g b, le TGA stocke b g r
         }
         return img;
     }
@@ -393,27 +415,31 @@ ColorImage* ColorImage::readTGA(std::istream& is) {
     
 
     Color palette[256];     //je crée la palette 
-    for (uint16_t i = 0; i < nb; ++i) {
-        uint8_t bgr[3];
-        is.read((char*) bgr, 3);
-        palette[i] = Color(bgr[2], bgr[1], bgr[0]);     // BGR du fichier = Color(r, g, b)
-    }
+    uint8_t bgr[256 * 3];
+    is.read((char*) bgr, size_t(nb) * 3);       // toute la palette d'un coup
+    for (uint16_t i = 0; i < nb; ++i)
+        palette[i] = Color(bgr[i * 3 + 2], bgr[i * 3 + 1], bgr[i * 3]);     // BGR du fichier = Color(r, g, b)
 
 
     if (!is)
         throw std::runtime_error("palette TGA tronquee");
 
     ColorImage* img = new ColorImage(w, h);
+    std::vector<uint8_t> indices(w);        // les indices d'une ligne lus d'un coup
     for (uint16_t y = 0; y < h; ++y) {
         const uint16_t ligne = basGauche ? h - 1 - y : y;       // meme pricipe que pour type 2 et gray image
+        is.read((char*) indices.data(), w);
+        if (!is) {
+            delete img;
+            throw std::runtime_error("fichier TGA tronque ou indice de palette invalide");
+        }
+        Color* dest = img->array + size_t(ligne) * w;
         for (uint16_t x = 0; x < w; ++x) {
-            uint8_t indice;
-            is.read((char*) &indice, 1);
-            if (!is || indice >= nb) {
+            if (indices[x] >= nb) {
                 delete img;
                 throw std::runtime_error("fichier TGA tronque ou indice de palette invalide");
             }
-            img->pixel(x, ligne) = palette[indice];     // le fichier contient un indice, on le traduit en couleur
+            dest[x] = palette[indices[x]];     // le fichier contient un indice, on le traduit en couleur
         }
     }
     return img;
@@ -457,18 +483,15 @@ ColorImage * ColorImage::readMaison(std::istream& is) {
         throw std::runtime_error("commentaire maison tronque");
     std::cout << commentaire << std::endl;
 
+    // au plus 255 x 255 pixels : tout le fichier tient dans un tampon, lu d'un seul coup
+    std::vector<uint8_t> cmy(size_t(w) * h * 3);
+    is.read((char*) cmy.data(), cmy.size());
+    if (!is)
+        throw std::runtime_error("fichier maison tronque");
+
     ColorImage* img = new ColorImage(w, h);
-    for (uint16_t y = 0; y < h; ++y) {
-        for (uint16_t x = 0; x < w; ++x) {
-            uint8_t cmy[3];
-            is.read((char*) cmy, 3);
-            if (!is) {
-                delete img; 
-                throw std::runtime_error("fichier maison tronque");
-            }
-            img->pixel(x, y).fromCMY(cmy[0], cmy[1], cmy[2]);
-        }
-    }
+    for (size_t t = 0; t < size_t(w) * h; ++t)
+        img->array[t].fromCMY(cmy[t * 3], cmy[t * 3 + 1], cmy[t * 3 + 2]);
     return img;
 }
 
@@ -482,9 +505,12 @@ ColorImage * ColorImage::anaglyphe() {
     ColorImage* img = new ColorImage(w, h);
 
     for(uint16_t y = 0; y < h; ++y) {
+        const Color* gauche = array + size_t(y) * getWidth();      // debut de la ligne, vue de gauche
+        const Color* droite = gauche + w;                           // meme ligne, vue de droite
+        Color* dest = img->array + size_t(y) * w;
         for(uint16_t x = 0; x < w; ++x) {
             // rouge de la vue de gauche, vert et bleu de la vue de droite
-            img->pixel(x, y) = Color(pixel(x, y).r, pixel(x + w, y).g, pixel(x + w, y).b);
+            dest[x] = Color(gauche[x].r, droite[x].g, droite[x].b);
         }
     }
     return img;

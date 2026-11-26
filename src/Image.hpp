@@ -1,10 +1,12 @@
 #ifndef IMAGE_HPP
 #define IMAGE_HPP
 
+#include <algorithm>
 #include <cstdint>
 #include <iostream>
 #include <string>
 #include <stdexcept>
+#include <vector>
 
 
 
@@ -31,26 +33,27 @@ class Image {
     protected:
         PixelType *array;
 
+        // nombre de pixels : en size_t AVANT la multiplication, sinon le calcul se fait en int
+        // et deborde des 46341 x 46341 pixels (65535 x 65535 depasse 2^31)
+        size_t taille() const { return size_t(width) * height; }
+
     public:
 
         Image& operator=(const Image& b) = delete;
 
 
-        Image(uint16_t w, uint16_t h) 
+        Image(uint16_t w, uint16_t h)
         : width(w), height(h), array(nullptr) {
-            if (w == 0 || h == 0) 
+            if (w == 0 || h == 0)
                 throw std::invalid_argument("Il ne peux pas y avoire de dimention null");
-            array = new PixelType [size_t(width*height)];
+            array = new PixelType [taille()];
         }
 
 
+        // l'original a deja ete verifie a sa construction, pas besoin de revoir ses dimensions
         Image(const Image& orig)
-        : width(orig.width), height(orig.height), array(nullptr) {
-            if (orig.width == 0 || orig.height == 0) 
-                throw std::invalid_argument("Il ne peux pas y avoire de dimention null");
-            array = new PixelType [orig.width * orig.height];
-            for (size_t t = 0; t < size_t(width * height); t++)
-                array[t] = orig.array[t];
+        : width(orig.width), height(orig.height), array(new PixelType [orig.taille()]) {
+            std::copy(orig.array, orig.array + taille(), array);
         }
 
         ~Image() {
@@ -63,51 +66,53 @@ class Image {
         PixelType& pixel(uint16_t x, uint16_t y) {
             if (x >= width || y >= height)
                 throw std::out_of_range("Accès hors limites");
-            return array[y*width+x];
+            return array[size_t(y) * width + x];
         }
 
 
          const PixelType& pixel(uint16_t x, uint16_t y) const {
             if (x >= width || y >= height)
                 throw std::out_of_range("Accès hors limites");
-            return array[y*width+x]; 
+            return array[size_t(y) * width + x];
         }
 
         void clear(PixelType defaultValue = PixelType()) {
-            for(size_t i = 0; i < (size_t)getWidth() * (size_t)getHeight(); ++i) 
-                array[i] = defaultValue;
+            std::fill(array, array + taille(), defaultValue);
         }
 
 
+        // les bornes sont verifiees une fois au debut : dans les boucles on ecrit directement
+        // dans le tableau, sans repasser par pixel() et sa verification a chaque pixel
         void rectangle(uint16_t x, uint16_t y, uint16_t w, uint16_t h, PixelType value) {
-            if (w == 0 || h == 0) 
+            if (w == 0 || h == 0)
                 throw std::invalid_argument("il ne peux pas y avoir de dimention null");
 
             if (x + w > width || y + h > height)
                 throw std::out_of_range("rectangle hors de l'image");
 
-            for(uint16_t i = x; i < x + w; i++) {
-                pixel(i, y) = value;
-                pixel(i, y + h - 1) = value;
-            }
+            PixelType* haut = array + size_t(y) * width + x;
+            PixelType* bas = array + size_t(y + h - 1) * width + x;
+            std::fill(haut, haut + w, value);
+            std::fill(bas, bas + w, value);
 
             for(uint16_t k = y; k < y + h; k++) {
-                pixel(x, k) = value;
-                pixel(x + w -1 , k) = value;
+                PixelType* ligne = array + size_t(k) * width;
+                ligne[x] = value;
+                ligne[x + w - 1] = value;
             }
         }
 
 
         void fillRectangle(uint16_t x, uint16_t y, uint16_t w, uint16_t h, PixelType value) {
-            if (w == 0 || h == 0) 
+            if (w == 0 || h == 0)
                 throw std::invalid_argument("il ne peux pas y avoir de dimention null");
 
             if (x + w > width || y + h > height)
                 throw std::out_of_range("rectangle hors de l'image");
 
-            for(size_t i = y; i < y + h; i++) {
-                for(size_t k = x; k < x + w; k++) 
-                    pixel(k, i) = value;
+            for(size_t i = y; i < size_t(y) + h; i++) {
+                PixelType* debut = array + i * width + x;
+                std::fill(debut, debut + w, value);
             }
 
         }
@@ -115,45 +120,63 @@ class Image {
 
 
         Image<PixelType>* simpleScale(uint16_t w, uint16_t h) const {
-            if (w == 0 || h == 0) 
+            if (w == 0 || h == 0)
                 throw std::invalid_argument("On ne peut pas diviser par 0");
-            
+
             Image<PixelType>* img = new Image<PixelType>(w, h);
 
             const double coefx = double(width) / w;
             const double coefy = double(height) / h;
 
+            // la colonne source ne depend que de xp : calculee une fois pour toutes les lignes
+            std::vector<uint16_t> colonne(w);
+            for (uint16_t xp = 0; xp < w; xp++)
+                colonne[xp] = uint16_t(xp * coefx);
+
             for (uint16_t yp = 0; yp < h; yp++) {
-                for (uint16_t xp = 0; xp < w; xp++) {
-                    uint16_t x(xp * coefx);
-                    uint16_t y(yp * coefy);
-                    img->pixel(xp, yp) = pixel(x, y);
-                }
+                const PixelType* source = array + size_t(uint16_t(yp * coefy)) * width;
+                PixelType* dest = img->array + size_t(yp) * w;
+                for (uint16_t xp = 0; xp < w; xp++)
+                    dest[xp] = source[colonne[xp]];
             }
             return img;
         }
 
-        
+
         Image<PixelType>* bilinearScale(uint16_t w, uint16_t h) const {
-            if (w == 0 || h == 0) 
+            if (w == 0 || h == 0)
                 throw std::invalid_argument("On ne peut pas diviser par 0");
 
             Image<PixelType>* img = new Image<PixelType>(w, h);
-            
+
             const double coefx = double(width) / w;
             const double coefy = double(height) / h;
 
-            for (uint16_t yp = 0; yp < h; ++yp) {
-                for (uint16_t xp = 0; xp < w; ++xp) {
-                    const double x = xp * coefx, y = yp * coefy;
-                    const uint16_t xi = uint16_t(x), yi = uint16_t(y);
-                    const double lambda = x - xi, mu = y - yi;
-                    const uint16_t xi1 = (xi + 1 < width)  ? xi + 1 : xi;
-                    const uint16_t yi1 = (yi + 1 < height) ? yi + 1 : yi;
+            // tout ce qui ne depend que de la colonne est calcule une seule fois
+            std::vector<uint16_t> xi(w), xi1(w);
+            std::vector<double> lambda(w);
+            for (uint16_t xp = 0; xp < w; ++xp) {
+                const double x = xp * coefx;
+                xi[xp] = uint16_t(x);
+                lambda[xp] = x - xi[xp];
+                xi1[xp] = (xi[xp] + 1 < width) ? xi[xp] + 1 : xi[xp];
+            }
 
-                    img->pixel(xp, yp) = PixelType(
-                          (1 - lambda) * (1 - mu) * pixel(xi, yi)   + lambda * (1 - mu) * pixel(xi1, yi)
-                        + (1 - lambda) * mu * pixel(xi, yi1) + lambda * mu * pixel(xi1, yi1)
+            for (uint16_t yp = 0; yp < h; ++yp) {
+                const double y = yp * coefy;
+                const uint16_t yi = uint16_t(y);
+                const double mu = y - yi;
+                const uint16_t yi1 = (yi + 1 < height) ? yi + 1 : yi;
+                const PixelType* l0 = array + size_t(yi) * width;      // ligne du dessus
+                const PixelType* l1 = array + size_t(yi1) * width;     // ligne du dessous
+                PixelType* dest = img->array + size_t(yp) * w;
+
+                for (uint16_t xp = 0; xp < w; ++xp) {
+                    const double l = lambda[xp];
+                    // meme calcul, dans le meme ordre, que la version pixel par pixel : meme resultat
+                    dest[xp] = PixelType(
+                          (1 - l) * (1 - mu) * l0[xi[xp]] + l * (1 - mu) * l0[xi1[xp]]
+                        + (1 - l) * mu * l1[xi[xp]]       + l * mu * l1[xi1[xp]]
                     );
                 }
             }
@@ -186,8 +209,8 @@ public:
     static GrayImage* readTGA(std::istream& is);
 
 
-    GrayImage* simpleScale(uint16_t w, uint16_t h) const; 
-    GrayImage* bilinearScale(uint16_t w, uint16_t h) const;  
+    GrayImage* simpleScale(uint16_t w, uint16_t h) const;
+    GrayImage* bilinearScale(uint16_t w, uint16_t h) const;
 };
 
 
